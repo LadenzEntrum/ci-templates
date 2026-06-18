@@ -1,0 +1,72 @@
+name: Deploy (reusable)
+
+# Reusable deploy workflow: rsync a build artifact onto the Synology `dsmuc`
+# over Tailscale via SSH. The `production` target is gated by the GitHub
+# Environment protection rule (required reviewer) on the CALLER repo.
+#
+# NOTE on GitHub semantics: environments + secrets are resolved in the CALLER
+# repository. The caller must define environments `staging`/`production` and
+# pass secrets via `secrets: inherit` (or explicitly).
+
+on:
+  workflow_call:
+    inputs:
+      deploy_target:
+        description: "Target environment: staging | production"
+        required: true
+        type: string
+      target-path:
+        description: "Absolute path on dsmuc to rsync into (e.g. /volume1/web/hue-staging)"
+        required: true
+        type: string
+      artifact-name:
+        description: "Name of the artifact produced by ci.yml"
+        required: false
+        type: string
+        default: "build"
+    secrets:
+      DEPLOY_SSH_KEY:
+        description: "Private SSH key authorized on dsmuc"
+        required: true
+      DEPLOY_HOST:
+        description: "dsmuc host/Tailscale IP"
+        required: true
+      DEPLOY_USER:
+        description: "SSH user on dsmuc"
+        required: true
+      TAILSCALE_AUTHKEY:
+        description: "Ephemeral Tailscale auth key for the runner"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.deploy_target }}
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ./artifact
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Configure SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Rsync to dsmuc
+        run: |
+          rsync -az --delete \
+            -e "ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new" \
+            ./artifact/ \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ inputs.target-path }}/"

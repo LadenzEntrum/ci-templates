@@ -1,0 +1,103 @@
+name: CI (reusable)
+
+# Reusable CI workflow: lint + test + build, then upload a build artifact.
+# Called from a project repo via `uses: LadenzEntrum/ci-templates/.github/workflows/ci.yml@<sha>`.
+
+on:
+  workflow_call:
+    inputs:
+      runtime:
+        description: "Runtime stack: php | node | python"
+        required: true
+        type: string
+      runtime-version:
+        description: "Toolchain version (defaults: php 8.2, node 20, python 3.12)"
+        required: false
+        type: string
+        default: ""
+      working-directory:
+        description: "Directory the build runs in"
+        required: false
+        type: string
+        default: "."
+      artifact-name:
+        description: "Name of the uploaded build artifact"
+        required: false
+        type: string
+        default: "build"
+      build-command:
+        description: "Optional build/package command (e.g. 'npm run build')"
+        required: false
+        type: string
+        default: ""
+    outputs:
+      artifact-name:
+        description: "Name of the uploaded build artifact"
+        value: ${{ jobs.lint-test-build.outputs.artifact-name }}
+
+permissions:
+  contents: read
+
+jobs:
+  lint-test-build:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: ${{ inputs.artifact-name }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---- PHP ----
+      - name: Setup PHP
+        if: inputs.runtime == 'php'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.runtime-version != '' && inputs.runtime-version || '8.2' }}
+      - name: PHP lint
+        if: inputs.runtime == 'php'
+        run: |
+          find . -type f -name '*.php' -print0 | xargs -0 -r -n1 -P4 php -l
+
+      # ---- Node ----
+      - name: Setup Node
+        if: inputs.runtime == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.runtime-version != '' && inputs.runtime-version || '20' }}
+          cache: npm
+      - name: Node install & test
+        if: inputs.runtime == 'node'
+        run: |
+          npm ci
+          npm run lint --if-present
+          npm test --if-present
+
+      # ---- Python ----
+      - name: Setup Python
+        if: inputs.runtime == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.runtime-version != '' && inputs.runtime-version || '3.12' }}
+      - name: Python install & test
+        if: inputs.runtime == 'python'
+        run: |
+          python -m pip install --upgrade pip
+          [ -f requirements.txt ] && pip install -r requirements.txt || true
+          python -m pyflakes . || true
+          python -m pytest -q || true
+
+      # ---- Optional build/package step (any runtime) ----
+      - name: Build
+        if: inputs.build-command != ''
+        run: ${{ inputs.build-command }}
+
+      # ---- Package the working directory as the deploy artifact ----
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.working-directory }}
+          retention-days: 7

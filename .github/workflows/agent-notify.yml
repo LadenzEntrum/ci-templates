@@ -1,0 +1,65 @@
+name: Agent Notify (reusable)
+
+# Reusable notify workflow: on a pipeline result (typically failure), POST a
+# signed JSON payload to the OpenClaw Gateway webhook. The gateway verifies the
+# HMAC-SHA256 signature and hands the event to the PL agent
+# (nvidia/nemotron-3-super-120b-a12b), which summarizes the cause and reports
+# via Telegram. The agent observes/reports only — it is NOT in the deploy path.
+
+on:
+  workflow_call:
+    inputs:
+      status:
+        description: "Pipeline result: success | failure"
+        required: true
+        type: string
+      stage:
+        description: "Which stage produced this result (ci | deploy)"
+        required: false
+        type: string
+        default: "ci"
+    secrets:
+      OPENCLAW_GATEWAY_WEBHOOK_URL:
+        description: "OpenClaw gateway webhook endpoint"
+        required: true
+      OPENCLAW_GATEWAY_WEBHOOK_SECRET:
+        description: "Shared secret for HMAC signature verification"
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build & sign payload
+        id: build
+        run: |
+          payload="$(jq -nc \
+            --arg event   'ci_result' \
+            --arg repo    "$GITHUB_REPOSITORY" \
+            --arg run_id  "$GITHUB_RUN_ID" \
+            --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --arg ref     "$GITHUB_REF_NAME" \
+            --arg sha     "$GITHUB_SHA" \
+            --arg actor   "$GITHUB_ACTOR" \
+            --arg status  '${{ inputs.status }}' \
+            --arg stage   '${{ inputs.stage }}' \
+            '{event:$event, repo:$repo, run_id:$run_id, run_url:$run_url, ref:$ref, sha:$sha, actor:$actor, status:$status, stage:$stage}')"
+          sig="$(printf '%s' "$payload" | openssl dgst -sha256 -hmac '${{ secrets.OPENCLAW_GATEWAY_WEBHOOK_SECRET }}' | sed 's/^.*= *//')"
+          {
+            echo "payload<<__EOF__"
+            echo "$payload"
+            echo "__EOF__"
+            echo "sig=sha256=$sig"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: POST to OpenClaw gateway
+        run: |
+          curl -sS --fail-with-body -X POST "${{ secrets.OPENCLAW_GATEWAY_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -H "X-OpenClaw-Event: ci_result" \
+            -H "X-OpenClaw-Signature: ${{ steps.build.outputs.sig }}" \
+            -d '${{ steps.build.outputs.payload }}'
