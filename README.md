@@ -22,8 +22,8 @@ Erst-Anwendung (Pilot): Repo `HUE Webapp` (über [Planner #5](https://github.com
 | Workflow | Zweck | Wichtige Inputs | Secrets |
 |----------|-------|-----------------|---------|
 | `ci.yml` | Lint + Test + Build → Artefakt | `runtime` (php\|node\|python), `runtime-version`, `working-directory`, `artifact-name`, `build-command` | – |
-| `deploy.yml` | rsync des Artefakts auf `dsmuc` über Tailscale/SSH; Prod-Gate via Environment | `deploy_target` (staging\|production), `target-path`, `artifact-name` | `DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_USER`, `TAILSCALE_AUTHKEY` |
-| `agent-notify.yml` | signierten Result-Webhook an OpenClaw-Gateway senden | `status`, `stage` | `OPENCLAW_GATEWAY_WEBHOOK_URL`, `OPENCLAW_GATEWAY_WEBHOOK_SECRET` |
+| `deploy.yml` | Kopiere das Artefakt in ein lokales Verzeichnis auf dem Self‑Hosted Runner; Prod‑Gate via Environment | `deploy_target` (staging\|production), `target-path`, `artifact-name` | – |
+| `agent-notify.yml` | Result an lokalen OpenClaw-Gateway-Hook senden (Bearer); läuft auf `self-hosted` | `status`, `stage` | `OPENCLAW_GATEWAY_HOOK_TOKEN` |
 
 ## So bindest du das Template in ein neues Repo ein
 
@@ -50,7 +50,7 @@ jobs:
     uses: LadenzEntrum/ci-templates/.github/workflows/deploy.yml@<COMMIT_SHA>
     with:
       deploy_target: staging
-      target-path: /volume1/web/hue-staging
+      target-path: /mnt/HettiWeb/hue-staging
       artifact-name: ${{ needs.ci.outputs.artifact-name }}
     secrets: inherit
 
@@ -60,7 +60,7 @@ jobs:
     uses: LadenzEntrum/ci-templates/.github/workflows/deploy.yml@<COMMIT_SHA>
     with:
       deploy_target: production          # gated: Required Reviewer im Environment
-      target-path: /volume1/web/hue
+      target-path: /mnt/HettiWeb/hue
       artifact-name: ${{ needs.ci.outputs.artifact-name }}
     secrets: inherit
 
@@ -84,20 +84,18 @@ Daher im Projekt-Repo (z. B. `HUE Webapp`) einrichten:
 
 - **Environments** `staging` und `production` (Prod mit Required Reviewer = PDO).
 - **Secrets** (Environment- oder Repo-/Org-Ebene):
-  - `DEPLOY_SSH_KEY` — privater SSH-Key, der auf `dsmuc` autorisiert ist
-  - `DEPLOY_HOST` — Tailscale-IP/Hostname von `dsmuc`
-  - `DEPLOY_USER` — SSH-User auf `dsmuc`
-  - `TAILSCALE_AUTHKEY` — ephemeraler Tailscale-Auth-Key für den Runner
-  - `OPENCLAW_GATEWAY_WEBHOOK_URL` — Webhook-Endpunkt des OpenClaw-Gateways
-  - `OPENCLAW_GATEWAY_WEBHOOK_SECRET` — Shared Secret für die HMAC-Signatur
+  - `OPENCLAW_GATEWAY_HOOK_TOKEN` — Bearer-Token des OpenClaw-Gateways (`hooks.token`). Der `agent-notify`-Job läuft auf einem **self-hosted Runner** auf dem OpenClaw-Host und postet an `http://127.0.0.1:18789/hooks/ci-result` (loopback-only, keine Internet-Exposition).
+  *(Keine Deploy‑Secrets mehr nötig, da der Workflow lokal auf dem Self‑Hosted Runner schreibt.)*
 
 ## Sicherheit
 
-- PAT für Deploys minimal: `repo` + `workflow`; Deploy-Credentials nur als Secrets.
+- Deploy schreibt lokal auf den NFS-Mount des self-hosted Runners — keine SSH-/Deploy-Credentials nötig.
 - `permissions:` defensiv (default read-only).
 - Prod nur hinter Environment-Gate mit Required Reviewer.
-- Agent-Webhook ist HMAC-SHA256-signiert (`X-OpenClaw-Signature: sha256=…`);
-  das Gateway verifiziert die Signatur, bevor es das Event annimmt.
+- Gateway-Hook ist **loopback-only** (`bind=loopback`, 127.0.0.1:18789) und per
+  statischem Bearer-Token (`hooks.token`) geschützt; der `agent-notify`-Job
+  erreicht ihn nur, weil er auf einem self-hosted Runner auf demselben Host läuft.
+  Keine Internet-Exposition, kein offener `/hooks/agent`.
 
 ## Quellen
 
